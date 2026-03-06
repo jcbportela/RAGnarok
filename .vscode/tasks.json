@@ -15,6 +15,7 @@
       }
     },
     {
+      "label": "compile",
       "type": "npm",
       "script": "compile",
       "problemMatcher": "$tsc",

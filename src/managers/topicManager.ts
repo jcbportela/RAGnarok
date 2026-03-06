@@ -58,6 +58,13 @@ export class TopicManager {
   // This allows TopicManager to notify other components (like RAGTool) without creating circular dependencies
   private static agentCacheCleanupCallback: ((topicId: string) => void) | null = null;
 
+  // Callback for skill file lifecycle (generate / delete / rename)
+  private static skillFileCallbacks: {
+    onTopicCreated?: (topic: Topic) => Promise<void>;
+    onTopicDeleted?: (topicName: string) => Promise<void>;
+    onTopicRenamed?: (oldName: string, topic: Topic) => Promise<void>;
+  } = {};
+
   private context: vscode.ExtensionContext;
   private logger: Logger;
   private topicsIndex: TopicsIndex | null = null;
@@ -216,6 +223,9 @@ export class TopicManager {
       // Initialize document map for this topic
       this.topicDocuments.set(topic.id, new Map());
 
+      // Notify skill file manager
+      await this.notifySkillFileCallback('created', topic);
+
       // Add initial documents if provided
       if (options.initialDocuments && options.initialDocuments.length > 0) {
         this.logger.info("Adding initial documents to topic", {
@@ -283,6 +293,9 @@ export class TopicManager {
 
       this.notifyAgentCacheCleanup(topicId);
 
+      // Notify skill file manager
+      await this.notifySkillFileCallback('deleted', undefined, topicName);
+
       this.logger.info("Topic deleted successfully", { topicId, topicName });
     } catch (error) {
       this.logger.error("Failed to delete topic", {
@@ -313,6 +326,32 @@ export class TopicManager {
   }
 
   /**
+   * Notify skill file callbacks for topic lifecycle events.
+   * Failures are logged but never propagated to the caller.
+   */
+  private async notifySkillFileCallback(
+    event: 'created' | 'deleted' | 'renamed',
+    topic?: Topic,
+    nameOrOldName?: string
+  ): Promise<void> {
+    const cbs = TopicManager.skillFileCallbacks;
+    try {
+      if (event === 'created' && cbs.onTopicCreated && topic) {
+        await cbs.onTopicCreated(topic);
+      } else if (event === 'deleted' && cbs.onTopicDeleted && nameOrOldName) {
+        await cbs.onTopicDeleted(nameOrOldName);
+      } else if (event === 'renamed' && cbs.onTopicRenamed && topic && nameOrOldName) {
+        await cbs.onTopicRenamed(nameOrOldName, topic);
+      }
+    } catch (error) {
+      this.logger.debug("Skill file callback failed", {
+        event,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Update topic metadata
    */
   public async updateTopic(
@@ -330,6 +369,9 @@ export class TopicManager {
       if (!topic) {
         throw new Error(`Topic not found: ${topicId}`);
       }
+
+      // Capture old name for skill rename
+      const oldName = topic.name;
 
       // Check for name conflicts if renaming
       if (updates.name && updates.name !== topic.name) {
@@ -353,6 +395,11 @@ export class TopicManager {
       // Save index
       this.topicsIndex.lastUpdated = Date.now();
       await this.saveTopicsIndex();
+
+      // Notify skill file manager about rename
+      if (updates.name && updates.name !== oldName) {
+        await this.notifySkillFileCallback('renamed', topic, oldName);
+      }
 
       this.logger.info("Topic updated successfully", { topicId });
 
@@ -698,6 +745,18 @@ export class TopicManager {
    */
   public static registerAgentCacheCleanupCallback(callback: (topicId: string) => void): void {
     TopicManager.agentCacheCleanupCallback = callback;
+  }
+
+  /**
+   * Register callbacks for skill file lifecycle events.
+   * This allows SkillFileManager to react to topic changes without circular deps.
+   */
+  public static registerSkillFileCallbacks(callbacks: {
+    onTopicCreated?: (topic: Topic) => Promise<void>;
+    onTopicDeleted?: (topicName: string) => Promise<void>;
+    onTopicRenamed?: (oldName: string, topic: Topic) => Promise<void>;
+  }): void {
+    TopicManager.skillFileCallbacks = callbacks;
   }
 
   /**

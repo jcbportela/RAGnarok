@@ -5,10 +5,11 @@
 
 import * as vscode from "vscode";
 import { TopicManager } from "./managers/topicManager";
+import { SkillFileManager } from "./managers/skillFileManager";
 import { Topic, Document, RetrievalStrategy } from "./utils/types";
 import { Logger } from "./utils/logger";
-import { CONFIG, COMMANDS } from "./utils/constants";
-import { EmbeddingService, type AvailableModel } from "./embeddings/embeddingService";
+import { CONFIG, COMMANDS, TREE_CONFIG_KEY } from "./utils/constants";
+import { EmbeddingService } from "./embeddings/embeddingService";
 
 const logger = new Logger("TopicTreeView");
 
@@ -24,11 +25,13 @@ export class TopicTreeDataProvider
 
   private topicManager: Promise<TopicManager>;
   private embeddingService: EmbeddingService;
+  private skillFileManager: SkillFileManager | null;
   private modelChangeSubscription: vscode.Disposable;
 
-  constructor() {
+  constructor(skillFileManager?: SkillFileManager) {
     this.topicManager = TopicManager.getInstance();
     this.embeddingService = EmbeddingService.getInstance();
+    this.skillFileManager = skillFileManager ?? null;
 
     // Subscribe to model change events to auto-refresh the tree view
     this.modelChangeSubscription = EmbeddingService.onModelChanged.subscribe((newModel: string) => {
@@ -56,45 +59,43 @@ export class TopicTreeDataProvider
       const topicManager = await this.topicManager;
 
       if (!element) {
-        // Root level - show configuration status + topics
-        const items: TopicTreeItem[] = [];
-
-        // Add configuration status item
-        items.push(new TopicTreeItem(null, "config-status"));
-
-        // Add topics
+        // Root level - show topics only (config is in its own separate view)
         const topics = await topicManager.getAllTopics();
         logger.debug(`Loaded ${topics.length} topics for tree view`);
 
-        items.push(
-          ...topics.map((topic: any) => new TopicTreeItem(topic, "topic"))
+        // Update VS Code context so viewsWelcome when-clause works correctly
+        vscode.commands.executeCommand(
+          "setContext",
+          "ragnarok.hasTopics",
+          topics.length > 0
         );
-        return items;
-      } else if (element.type === "config-status") {
-        // Show configuration items
-        return this.getConfigurationItems();
-      } else if (element.type === "local-models") {
-        try {
-          const models = await this.embeddingService.listAvailableModels();
-          if (!models || models.length === 0) return [];
-          return models.map((model: AvailableModel) => {
-            // Strip leading dots or path separators so names display cleanly (e.g. '.my-model' -> 'my-model')
-            const display = (model.name ?? "").replace(/^[.\\/]+/, "");
-            return new TopicTreeItem(
-              {
-                key: "local-model",
-                value: model.name,
-                display,
-                source: model.source,
-                downloaded: !!model.downloaded,
-              },
-              "config-item"
-            );
-          });
-        } catch (err) {
-          logger.warn('Failed to load local models for tree children', err);
-          return [];
-        }
+
+        return topics.map((topic: any) => {
+          const item = new TopicTreeItem(topic, "topic");
+          if (this.skillFileManager) {
+            const globalEnabled = vscode.workspace
+              .getConfiguration(CONFIG.ROOT)
+              .get<boolean>(CONFIG.GENERATE_SKILL_FILES, true);
+            const isCommon = topic.source === 'common';
+
+            if (globalEnabled) {
+              // Global ON: show sparkle in description for all topics
+              const docLabel = `${topic.documentCount} document${topic.documentCount !== 1 ? "s" : ""}`;
+              item.description = isCommon ? `${docLabel} (read-only) ✨` : `${docLabel} ✨`;
+            } else {
+              // Global OFF: show per-topic toggle button via contextValue
+              const skillEnabled = this.skillFileManager.isTopicSkillEnabled(topic.id);
+              item.contextValue = isCommon
+                ? (skillEnabled ? 'topic-common-skill-on' : 'topic-common-skill-off')
+                : (skillEnabled ? 'topic-skill-on' : 'topic-skill-off');
+              if (skillEnabled) {
+                const docLabel = `${topic.documentCount} document${topic.documentCount !== 1 ? "s" : ""}`;
+                item.description = isCommon ? `${docLabel} (read-only) ✨` : `${docLabel} ✨`;
+              }
+            }
+          }
+          return item;
+        });
       } else if (element.type === "topic" && element.topic) {
         // Show statistics and documents for this topic
         const items: TopicTreeItem[] = [];
@@ -102,7 +103,8 @@ export class TopicTreeDataProvider
         // Add stats item
         const stats = await topicManager.getTopicStats(element.topic.id);
         if (stats) {
-          items.push(new TopicTreeItem(stats, "topic-stats"));
+          // Attach topic info so getStatisticsItems can show skill status
+          items.push(new TopicTreeItem({ ...stats, _topic: element.topic }, "topic-stats"));
         }
 
         // Add documents
@@ -136,26 +138,62 @@ export class TopicTreeDataProvider
     const currentModel = this.embeddingService.getCurrentModel();
     items.push(
       new TopicTreeItem(
-        { key: "embedding-model", value: currentModel },
+        { key: TREE_CONFIG_KEY.EMBEDDING_MODEL, value: currentModel },
         "config-item"
       )
     );
 
-    // Embedding models (curated remote options + any discovered local models)
-    try {
-      const availableModels = await this.embeddingService.listAvailableModels();
-      if (availableModels && availableModels.length > 0) {
-        items.push(new TopicTreeItem({ key: "local-models", value: "" }, "local-models"));
-      }
-    } catch (err) {
-      logger.warn('Failed to enumerate local models for tree view', err);
-    }
+    // Embedding backend
+    const backend = config.get<string>(CONFIG.EMBEDDING_BACKEND, 'auto');
+    const activeBackend = this.embeddingService.getActiveBackendType?.() ?? backend;
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.EMBEDDING_BACKEND, value: `${backend}${activeBackend !== backend ? ` → ${activeBackend}` : ''}` },
+        "config-item"
+      )
+    );
 
     // Retrieval strategy (applies to all modes)
     const strategy = config.get<string>(CONFIG.RETRIEVAL_STRATEGY, "hybrid");
     items.push(
       new TopicTreeItem(
-        { key: "retrieval-strategy", value: strategy },
+        { key: TREE_CONFIG_KEY.RETRIEVAL_STRATEGY, value: strategy },
+        "config-item"
+      )
+    );
+
+    // Top K
+    const topK = config.get<number>(CONFIG.TOP_K, 5);
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.TOP_K, value: topK },
+        "config-item"
+      )
+    );
+
+    // Chunk size
+    const chunkSize = config.get<number>(CONFIG.CHUNK_SIZE, 512);
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.CHUNK_SIZE, value: chunkSize },
+        "config-item"
+      )
+    );
+
+    // Chunk overlap
+    const chunkOverlap = config.get<number>(CONFIG.CHUNK_OVERLAP, 50);
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.CHUNK_OVERLAP, value: chunkOverlap },
+        "config-item"
+      )
+    );
+
+    // Log level
+    const logLevel = config.get<string>(CONFIG.LOG_LEVEL, 'info');
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.LOG_LEVEL, value: logLevel },
         "config-item"
       )
     );
@@ -164,16 +202,45 @@ export class TopicTreeDataProvider
     const useAgenticMode = config.get<boolean>(CONFIG.USE_AGENTIC_MODE, false);
     items.push(
       new TopicTreeItem(
-        { key: "agentic-mode", value: useAgenticMode },
+        { key: TREE_CONFIG_KEY.AGENTIC_MODE, value: useAgenticMode },
         "config-item"
       )
     );
 
     // LLM usage
     if (useAgenticMode) {
-      const useLLM = config.get<boolean>(CONFIG.AGENTIC_USE_LLM, false);
+      const useLLM = config.get<boolean>(CONFIG.AGENTIC_USE_LLM, true);
       items.push(
-        new TopicTreeItem({ key: "use-llm", value: useLLM }, "config-item")
+        new TopicTreeItem({ key: TREE_CONFIG_KEY.USE_LLM, value: useLLM }, "config-item")
+      );
+
+      // LLM model family (show when LLM is enabled)
+      if (useLLM) {
+        const llmModel = config.get<string>(CONFIG.AGENTIC_LLM_MODEL, 'gpt-4o-mini');
+        items.push(
+          new TopicTreeItem(
+            { key: TREE_CONFIG_KEY.LLM_MODEL, value: llmModel },
+            "config-item"
+          )
+        );
+
+        // Include workspace context
+        const includeWorkspace = config.get<boolean>(CONFIG.AGENTIC_INCLUDE_WORKSPACE, true);
+        items.push(
+          new TopicTreeItem(
+            { key: TREE_CONFIG_KEY.INCLUDE_WORKSPACE_CONTEXT, value: includeWorkspace },
+            "config-item"
+          )
+        );
+      }
+
+      // Iterative refinement
+      const iterativeRefinement = config.get<boolean>(CONFIG.AGENTIC_ITERATIVE_REFINEMENT, true);
+      items.push(
+        new TopicTreeItem(
+          { key: TREE_CONFIG_KEY.ITERATIVE_REFINEMENT, value: iterativeRefinement },
+          "config-item"
+        )
       );
 
       // Max iterations
@@ -183,7 +250,7 @@ export class TopicTreeDataProvider
       );
       items.push(
         new TopicTreeItem(
-          { key: "max-iterations", value: maxIterations },
+          { key: TREE_CONFIG_KEY.MAX_ITERATIONS, value: maxIterations },
           "config-item"
         )
       );
@@ -195,7 +262,7 @@ export class TopicTreeDataProvider
       );
       items.push(
         new TopicTreeItem(
-          { key: "confidence-threshold", value: threshold },
+          { key: TREE_CONFIG_KEY.CONFIDENCE_THRESHOLD, value: threshold },
           "config-item"
         )
       );
@@ -243,6 +310,22 @@ export class TopicTreeDataProvider
       )
     );
 
+    // Skill file status
+    if (this.skillFileManager && stats._topic) {
+      const topic = stats._topic as Topic;
+      const globalEnabled = vscode.workspace
+        .getConfiguration(CONFIG.ROOT)
+        .get<boolean>(CONFIG.GENERATE_SKILL_FILES, true);
+      const perTopicEnabled = this.skillFileManager.isTopicSkillEnabled(topic.id);
+      const hasSkill = globalEnabled || perTopicEnabled;
+      items.push(
+        new TopicTreeItem(
+          { key: "skill-status", value: hasSkill ? "✅ Generated" : "❌ Not generated" },
+          "stat-item"
+        )
+      );
+    }
+
     return items;
   }
 }
@@ -255,7 +338,6 @@ export class TopicTreeItem extends vscode.TreeItem {
       | "document"
       | "config-status"
       | "config-item"
-      | "local-models"
       | "topic-stats"
       | "stat-item"
   ) {
@@ -275,8 +357,6 @@ export class TopicTreeItem extends vscode.TreeItem {
         return `📄 ${data.name}`;
       case "config-status":
         return "⚙️ Configuration";
-      case "local-models":
-        return "🧠 Embedding Models";
       case "config-item":
         return TopicTreeItem.formatConfigLabel(data);
       case "topic-stats":
@@ -294,7 +374,6 @@ export class TopicTreeItem extends vscode.TreeItem {
     switch (type) {
       case "topic":
       case "config-status":
-      case "local-models":
       case "topic-stats":
         return vscode.TreeItemCollapsibleState.Collapsed;
       default:
@@ -305,11 +384,11 @@ export class TopicTreeItem extends vscode.TreeItem {
   private static formatConfigLabel(configData: any): string {
     const { key, value } = configData;
     switch (key) {
-      case "agentic-mode":
+      case TREE_CONFIG_KEY.AGENTIC_MODE:
         return `Agentic Mode: ${value ? "✅ Enabled" : "❌ Disabled"}`;
-      case "use-llm":
+      case TREE_CONFIG_KEY.USE_LLM:
         return `LLM Planning: ${value ? "✅ Enabled" : "❌ Disabled"}`;
-      case "retrieval-strategy":
+      case TREE_CONFIG_KEY.RETRIEVAL_STRATEGY:
         return `Strategy: ${
           value === RetrievalStrategy.HYBRID
             ? "🔀 Hybrid"
@@ -321,17 +400,29 @@ export class TopicTreeItem extends vscode.TreeItem {
             ? "🔍 BM25"
             : "❓ Unknown"
         }`;
-      case "embedding-model":
+      case TREE_CONFIG_KEY.EMBEDDING_MODEL:
         return `🤖 Embedding Model: ${value}`;
-      case "local-models":
-        return `Embedding Models:`;
-      case "local-model":
-        // Show a download indicator for curated models that have not been pulled yet
-        return `${configData.source === "curated" && !configData.downloaded ? "🔴 " : "🟢 "}${configData.display ?? value}`;
-      case "max-iterations":
-        return `Max Iterations: ${value}`;
-      case "confidence-threshold":
-        return `Confidence: ${(value * 100).toFixed(0)}%`;
+      case TREE_CONFIG_KEY.EMBEDDING_BACKEND:
+        return `🔌 Backend: ${value}`;
+      case TREE_CONFIG_KEY.LLM_MODEL:
+        return `🧠 LLM Model: ${value}`;
+
+      case TREE_CONFIG_KEY.MAX_ITERATIONS:
+        return `🔄 Max Iterations: ${value}`;
+      case TREE_CONFIG_KEY.CONFIDENCE_THRESHOLD:
+        return `🎯 Confidence: ${(value * 100).toFixed(0)}%`;
+      case TREE_CONFIG_KEY.TOP_K:
+        return `📊 Top K: ${value}`;
+      case TREE_CONFIG_KEY.CHUNK_SIZE:
+        return `📏 Chunk Size: ${value}`;
+      case TREE_CONFIG_KEY.CHUNK_OVERLAP:
+        return `↔️ Chunk Overlap: ${value}`;
+      case TREE_CONFIG_KEY.LOG_LEVEL:
+        return `📋 Log Level: ${value}`;
+      case TREE_CONFIG_KEY.ITERATIVE_REFINEMENT:
+        return `Iterative Refinement: ${value ? "✅ Enabled" : "❌ Disabled"}`;
+      case TREE_CONFIG_KEY.INCLUDE_WORKSPACE_CONTEXT:
+        return `Workspace Context: ${value ? "✅ Included" : "❌ Excluded"}`;
       default:
         return `${key}: ${value}`;
     }
@@ -348,6 +439,8 @@ export class TopicTreeItem extends vscode.TreeItem {
         return `🤖 Model: ${value}`;
       case "last-updated":
         return `🕒 Updated: ${value}`;
+      case "skill-status":
+        return `✨ Skill: ${value}`;
       default:
         return `${key}: ${value}`;
     }
@@ -384,21 +477,160 @@ export class TopicTreeItem extends vscode.TreeItem {
       case "config-item":
         this.tooltip = `Click to change this setting`;
         this.contextValue = "config-item";
-        // this.iconPath = new vscode.ThemeIcon("symbol-property");
 
-        // If this is a discovered local model entry, make it clickable to load
-        if (data && data.key === 'local-model') {
+        // Make embedding-model item clickable → opens the HF or VS Code model picker
+        if (data && data.key === TREE_CONFIG_KEY.EMBEDDING_MODEL) {
+          const modelStr = String(data.value ?? '');
+          if (modelStr.startsWith('vscodeLM:')) {
             this.command = {
-              command: COMMANDS.SET_EMBEDDING_MODEL,
-              title: 'Set Embedding Model',
-              arguments: [data.value],
+              command: COMMANDS.SELECT_VSCODE_EMBEDDING_MODEL,
+              title: 'Select VS Code Embedding Model',
             };
-          const needsDownload = data.source === "curated" && !data.downloaded;
-          const sourceLabel = data.source === "curated" ? "curated" : "local";
-          this.tooltip = needsDownload
-            ? `Click to download and load ${sourceLabel} model: ${data.display ?? data.value}`
-            : `Click to load ${sourceLabel} model: ${data.display ?? data.value}`;
+            this.contextValue = "config-embedding-vscode";
+          } else {
+            this.command = {
+              command: COMMANDS.SELECT_HF_EMBEDDING_MODEL,
+              title: 'Select HuggingFace Embedding Model',
+            };
+            this.contextValue = "config-embedding-hf";
+          }
+          this.tooltip = 'Click to change the embedding model';
         }
+
+        // Make embedding-backend item clickable → opens inline QuickPick
+        if (data && data.key === TREE_CONFIG_KEY.EMBEDDING_BACKEND) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Embedding Backend',
+            arguments: [TREE_CONFIG_KEY.EMBEDDING_BACKEND],
+          };
+          this.contextValue = "config-embedding-backend";
+          this.tooltip = 'Click to change the embedding backend';
+        }
+
+        // Make retrieval-strategy item clickable → opens inline QuickPick
+        if (data && data.key === TREE_CONFIG_KEY.RETRIEVAL_STRATEGY) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Retrieval Strategy',
+            arguments: [TREE_CONFIG_KEY.RETRIEVAL_STRATEGY],
+          };
+          this.contextValue = "config-retrieval-strategy";
+          this.tooltip = 'Click to change the retrieval strategy';
+        }
+
+        // Boolean toggles
+        if (data && data.key === TREE_CONFIG_KEY.AGENTIC_MODE) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Toggle Agentic Mode',
+            arguments: [TREE_CONFIG_KEY.AGENTIC_MODE],
+          };
+          this.contextValue = "config-agentic-mode";
+          this.tooltip = `Agentic Mode: ${data.value ? 'Enabled' : 'Disabled'} — Click to toggle`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.USE_LLM) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Toggle LLM Planning',
+            arguments: [TREE_CONFIG_KEY.USE_LLM],
+          };
+          this.contextValue = "config-llm";
+          this.tooltip = `LLM Planning: ${data.value ? 'Enabled' : 'Disabled'} — Click to toggle`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.ITERATIVE_REFINEMENT) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Toggle Iterative Refinement',
+            arguments: [TREE_CONFIG_KEY.ITERATIVE_REFINEMENT],
+          };
+          this.contextValue = "config-iterative-refinement";
+          this.tooltip = `Iterative Refinement: ${data.value ? 'Enabled' : 'Disabled'} — Click to toggle`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.INCLUDE_WORKSPACE_CONTEXT) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Toggle Workspace Context',
+            arguments: [TREE_CONFIG_KEY.INCLUDE_WORKSPACE_CONTEXT],
+          };
+          this.contextValue = "config-include-workspace";
+          this.tooltip = `Include Workspace Context: ${data.value ? 'Enabled' : 'Disabled'} — Click to toggle`;
+        }
+
+        // Make llm-model item clickable → opens the LLM model picker
+        if (data && data.key === TREE_CONFIG_KEY.LLM_MODEL) {
+          this.command = {
+            command: COMMANDS.SELECT_LLM_MODEL,
+            title: 'Select LLM Model',
+          };
+          this.contextValue = "config-llm-model";
+          this.tooltip = `Current LLM: ${data.value} — Click to change`;
+        }
+
+        // Number inputs
+        if (data && data.key === TREE_CONFIG_KEY.MAX_ITERATIONS) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Max Iterations',
+            arguments: [TREE_CONFIG_KEY.MAX_ITERATIONS],
+          };
+          this.contextValue = "config-max-iterations";
+          this.tooltip = `Max Iterations: ${data.value} — Click to change`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.CONFIDENCE_THRESHOLD) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Confidence Threshold',
+            arguments: [TREE_CONFIG_KEY.CONFIDENCE_THRESHOLD],
+          };
+          this.contextValue = "config-confidence-threshold";
+          this.tooltip = `Confidence Threshold: ${data.value} — Click to change`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.TOP_K) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Top K',
+            arguments: [TREE_CONFIG_KEY.TOP_K],
+          };
+          this.contextValue = "config-top-k";
+          this.tooltip = `Top K Results: ${data.value} — Click to change`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.CHUNK_SIZE) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Chunk Size',
+            arguments: [TREE_CONFIG_KEY.CHUNK_SIZE],
+          };
+          this.contextValue = "config-chunk-size";
+          this.tooltip = `Chunk Size: ${data.value} — Click to change`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.CHUNK_OVERLAP) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Chunk Overlap',
+            arguments: [TREE_CONFIG_KEY.CHUNK_OVERLAP],
+          };
+          this.contextValue = "config-chunk-overlap";
+          this.tooltip = `Chunk Overlap: ${data.value} — Click to change`;
+        }
+
+        if (data && data.key === TREE_CONFIG_KEY.LOG_LEVEL) {
+          this.command = {
+            command: COMMANDS.EDIT_CONFIG_ITEM,
+            title: 'Change Log Level',
+            arguments: [TREE_CONFIG_KEY.LOG_LEVEL],
+          };
+          this.contextValue = "config-log-level";
+          this.tooltip = `Log Level: ${data.value} — Click to change`;
+        }
+
         break;
 
       case "topic-stats":
@@ -421,5 +653,190 @@ export class TopicTreeItem extends vscode.TreeItem {
 
   get document(): Document | undefined {
     return this.type === "document" ? (this.data as Document) : undefined;
+  }
+}
+
+/**
+ * Separate tree data provider for the Configuration view (ragConfig panel).
+ * Always has items, so the Topics view can use viewsWelcome for its empty state.
+ */
+export class ConfigTreeDataProvider
+  implements vscode.TreeDataProvider<TopicTreeItem>, vscode.Disposable
+{
+  private _onDidChangeTreeData: vscode.EventEmitter<
+    TopicTreeItem | undefined | null | void
+  > = new vscode.EventEmitter<TopicTreeItem | undefined | null | void>();
+  readonly onDidChangeTreeData: vscode.Event<
+    TopicTreeItem | undefined | null | void
+  > = this._onDidChangeTreeData.event;
+
+  private embeddingService: EmbeddingService;
+  private modelChangeSubscription: vscode.Disposable;
+
+  constructor() {
+    this.embeddingService = EmbeddingService.getInstance();
+    this.modelChangeSubscription = EmbeddingService.onModelChanged.subscribe(
+      (newModel: string) => {
+        logger.debug(`Model changed to "${newModel}", refreshing config view`);
+        this.refresh();
+      }
+    );
+  }
+
+  dispose(): void {
+    this.modelChangeSubscription.dispose();
+    this._onDidChangeTreeData.dispose();
+  }
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire();
+  }
+
+  getTreeItem(element: TopicTreeItem): vscode.TreeItem {
+    return element;
+  }
+
+  async getChildren(element?: TopicTreeItem): Promise<TopicTreeItem[]> {
+    try {
+      if (!element) {
+        // Root: config items directly — no extra collapsible wrapper needed
+        return this.getConfigurationItems();
+      }
+      return [];
+    } catch (error) {
+      logger.error(`Failed to get config tree children: ${error}`);
+      return [];
+    }
+  }
+
+  private async getConfigurationItems(): Promise<TopicTreeItem[]> {
+    const config = vscode.workspace.getConfiguration(CONFIG.ROOT);
+    const items: TopicTreeItem[] = [];
+
+    const currentModel = this.embeddingService.getCurrentModel();
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.EMBEDDING_MODEL, value: currentModel },
+        "config-item"
+      )
+    );
+
+    const backend = config.get<string>(CONFIG.EMBEDDING_BACKEND, "auto");
+    const activeBackend =
+      this.embeddingService.getActiveBackendType?.() ?? backend;
+    items.push(
+      new TopicTreeItem(
+        {
+          key: TREE_CONFIG_KEY.EMBEDDING_BACKEND,
+          value: `${backend}${activeBackend !== backend ? ` → ${activeBackend}` : ""}`,
+        },
+        "config-item"
+      )
+    );
+
+    const strategy = config.get<string>(CONFIG.RETRIEVAL_STRATEGY, "hybrid");
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.RETRIEVAL_STRATEGY, value: strategy },
+        "config-item"
+      )
+    );
+
+    const topK = config.get<number>(CONFIG.TOP_K, 5);
+    items.push(
+      new TopicTreeItem({ key: TREE_CONFIG_KEY.TOP_K, value: topK }, "config-item")
+    );
+
+    const chunkSize = config.get<number>(CONFIG.CHUNK_SIZE, 512);
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.CHUNK_SIZE, value: chunkSize },
+        "config-item"
+      )
+    );
+
+    const chunkOverlap = config.get<number>(CONFIG.CHUNK_OVERLAP, 50);
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.CHUNK_OVERLAP, value: chunkOverlap },
+        "config-item"
+      )
+    );
+
+    const logLevel = config.get<string>(CONFIG.LOG_LEVEL, "info");
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.LOG_LEVEL, value: logLevel },
+        "config-item"
+      )
+    );
+
+    const useAgenticMode = config.get<boolean>(CONFIG.USE_AGENTIC_MODE, false);
+    items.push(
+      new TopicTreeItem(
+        { key: TREE_CONFIG_KEY.AGENTIC_MODE, value: useAgenticMode },
+        "config-item"
+      )
+    );
+
+    if (useAgenticMode) {
+      const useLLM = config.get<boolean>(CONFIG.AGENTIC_USE_LLM, true);
+      items.push(
+        new TopicTreeItem({ key: TREE_CONFIG_KEY.USE_LLM, value: useLLM }, "config-item")
+      );
+
+      if (useLLM) {
+        const llmModel = config.get<string>(CONFIG.AGENTIC_LLM_MODEL, "gpt-4o-mini");
+        items.push(
+          new TopicTreeItem(
+            { key: TREE_CONFIG_KEY.LLM_MODEL, value: llmModel },
+            "config-item"
+          )
+        );
+
+        const includeWorkspace = config.get<boolean>(
+          CONFIG.AGENTIC_INCLUDE_WORKSPACE,
+          true
+        );
+        items.push(
+          new TopicTreeItem(
+            { key: TREE_CONFIG_KEY.INCLUDE_WORKSPACE_CONTEXT, value: includeWorkspace },
+            "config-item"
+          )
+        );
+      }
+
+      const iterativeRefinement = config.get<boolean>(
+        CONFIG.AGENTIC_ITERATIVE_REFINEMENT,
+        true
+      );
+      items.push(
+        new TopicTreeItem(
+          { key: TREE_CONFIG_KEY.ITERATIVE_REFINEMENT, value: iterativeRefinement },
+          "config-item"
+        )
+      );
+
+      const maxIterations = config.get<number>(CONFIG.AGENTIC_MAX_ITERATIONS, 3);
+      items.push(
+        new TopicTreeItem(
+          { key: TREE_CONFIG_KEY.MAX_ITERATIONS, value: maxIterations },
+          "config-item"
+        )
+      );
+
+      const threshold = config.get<number>(
+        CONFIG.AGENTIC_CONFIDENCE_THRESHOLD,
+        0.7
+      );
+      items.push(
+        new TopicTreeItem(
+          { key: TREE_CONFIG_KEY.CONFIDENCE_THRESHOLD, value: threshold },
+          "config-item"
+        )
+      );
+    }
+
+    return items;
   }
 }

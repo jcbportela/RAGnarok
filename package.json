@@ -2,7 +2,7 @@
   "name": "ragnarok",
   "displayName": "RAGnarōk - Local RAG for Copilot",
   "description": "Retrieval-Augmented Generation extension for VSCode with local sentence transformers and semantic chunking",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "publisher": "hyorman",
   "icon": "assets/icon.png",
   "license": "MIT",
@@ -24,10 +24,35 @@
     "onStartupFinished"
   ],
   "main": "./out/src/extension.js",
+  "enabledApiProposals": [
+    "embeddings"
+  ],
   "contributes": {
     "configuration": {
       "title": "RAGnarōk",
       "properties": {
+        "ragnarok.embeddingBackend": {
+          "type": "string",
+          "default": "auto",
+          "markdownDescription": "**Embedding backend** to use for generating vectors:\n\n- **auto** (default): Try VS Code LM embeddings first; fall back to local HuggingFace if unavailable.\n- **vscodeLM**: Force VS Code Language Model API embeddings (requires a registered embedding provider such as GitHub Copilot).\n- **huggingface**: Force local HuggingFace Transformers.js embeddings (ONNX/WASM, fully offline).\n\n⚠️ Switching backends may change the embedding dimension. Existing vector stores built with a different backend/model will need to be re-indexed.",
+          "enum": [
+            "auto",
+            "vscodeLM",
+            "huggingface"
+          ],
+          "enumDescriptions": [
+            "Auto: Try VS Code LM first, fall back to HuggingFace",
+            "VS Code LM: Force VS Code Language Model API embeddings (requires provider)",
+            "HuggingFace: Force local Transformers.js embeddings (offline)"
+          ],
+          "order": 1
+        },
+        "ragnarok.embeddingVscodeModelId": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "**VS Code LM embedding model ID** to use when backend is `vscodeLM` or `auto`.\n\nLeave empty to auto-select the first available model. The available models depend on the registered embeddings provider (e.g., GitHub Copilot).\n\n💡 Check `Developer: Show Running Extensions` → Language Model API for available model IDs.",
+          "order": 1
+        },
         "ragnarok.localModelPath": {
           "type": "string",
           "default": "",
@@ -124,24 +149,14 @@
         },
         "ragnarok.agenticUseLLM": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "markdownDescription": "**Use LLM (Copilot) for intelligent planning:** Uses Copilot for query decomposition and result evaluation instead of rule-based heuristics.\n\n**Requirements:**\n- ✅ GitHub Copilot subscription\n- ✅ GitHub Copilot extension\n\n**Trade-offs:**\n- ✅ Much more intelligent\n- ✅ Context-aware planning\n- ⚠️ 2-3x slower\n- ⚠️ Uses Copilot API quota\n\n⚠️ _Only applies when Agentic Mode is enabled_",
           "order": 14
         },
         "ragnarok.agenticLLMModel": {
           "type": "string",
-          "default": "gpt-4o",
-          "markdownDescription": "**LLM model to use** for query planning and evaluation:\n\n- **gpt-4o** (default): Most intelligent, best reasoning\n- **gpt-4o-mini**: Faster, cheaper, still very capable\n- **gpt-3.5-turbo**: Fastest, most economical\n\n**Performance:**\n- gpt-4o: Best quality, slower, more tokens\n- gpt-4o-mini: Good balance\n- gpt-3.5-turbo: Fast, lower quality\n\n⚠️ _Only applies when LLM Mode is enabled_",
-          "enum": [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-3.5-turbo"
-          ],
-          "enumDescriptions": [
-            "GPT-4o: Most intelligent, best for complex reasoning (slower, more expensive)",
-            "GPT-4o-mini: Balanced performance and cost (recommended for most uses)",
-            "GPT-3.5 Turbo: Fastest and most economical (lower quality reasoning)"
-          ],
+          "default": "gpt-4o-mini",
+          "markdownDescription": "**LLM model family** to use for query planning and evaluation.\n\nUse **RAG: Select LLM Model** from the Command Palette to discover all available models at runtime.\n\n💡 The available models depend on your Copilot subscription and installed extensions.\n\n⚠️ _Only applies when LLM Mode is enabled_",
           "order": 15
         },
         "ragnarok.agenticIncludeWorkspaceContext": {
@@ -155,6 +170,12 @@
           "default": "",
           "markdownDescription": "**Path to a shared/common RAG database folder.** Topics from this path are read-only and cannot be deleted or modified. Useful for team-shared knowledge bases.\n\n**Format:** Absolute path to a folder containing exported RAG database files.",
           "order": 17
+        },
+        "ragnarok.generateSkillFiles": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "**Generate SKILL files** for each topic so that Copilot agents can discover available RAG knowledge bases automatically.\n\nWhen enabled, a `SKILL.md` file is created/updated in `~/.copilot/skills/` whenever a topic is created, renamed, or deleted.\n\nWhen disabled, skill files are removed for all topics. Individual topics can still have skills enabled via the tree view toggle.",
+          "order": 18
         }
       }
     },
@@ -233,6 +254,18 @@
         "title": "Rename Topic",
         "category": "RAG",
         "icon": "$(edit)"
+      },
+      {
+        "command": "ragnarok.regenerateSkills",
+        "title": "Regenerate Skill Files",
+        "category": "RAG",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "ragnarok.toggleTopicSkill",
+        "title": "Toggle Skill for Topic",
+        "category": "RAG",
+        "icon": "$(sparkle)"
       }
     ],
     "viewsContainers": {
@@ -250,13 +283,24 @@
           "id": "ragTopics",
           "name": "Topics",
           "icon": "$(files)"
+        },
+        {
+          "id": "ragConfig",
+          "name": "Configuration",
+          "icon": "$(settings-gear)"
         }
       ]
     },
     "viewsWelcome": [
       {
         "view": "ragTopics",
-        "contents": "No topics yet. Create your first topic to start using RAG!\n[Create Topic](command:ragnarok.createTopic)\nTopics help organize your documents for semantic search and retrieval-augmented generation with Copilot."
+        "contents": "RAGnarōk is starting up...\n\nReady in just a moment.",
+        "when": "!ragnarok.loaded"
+      },
+      {
+        "view": "ragTopics",
+        "contents": "No topics yet.\n\nCreate a topic to start indexing your documents for semantic search and RAG queries with Copilot.\n\n[$(add) Create Topic](command:ragnarok.createTopic)\n[$(cloud-download) Import Topic](command:ragnarok.importTopic)\n\nNeed help? [Read the docs](https://github.com/hyorman/ragnarok#readme)",
+        "when": "ragnarok.loaded && !ragnarok.hasTopics"
       }
     ],
     "menus": {
@@ -280,28 +324,33 @@
       "view/item/context": [
         {
           "command": "ragnarok.addDocument",
-          "when": "view == ragTopics && viewItem == topic",
+          "when": "view == ragTopics && viewItem =~ /^topic(-skill-(on|off))?$/",
           "group": "inline@1"
         },
         {
           "command": "ragnarok.addGithubRepo",
-          "when": "view == ragTopics && viewItem == topic",
+          "when": "view == ragTopics && viewItem =~ /^topic(-skill-(on|off))?$/",
           "group": "inline@2"
         },
         {
           "command": "ragnarok.exportTopic",
-          "when": "view == ragTopics && viewItem == topic",
+          "when": "view == ragTopics && viewItem =~ /^topic(-skill-(on|off))?$/",
           "group": "inline@3"
         },
         {
           "command": "ragnarok.deleteTopic",
-          "when": "view == ragTopics && viewItem == topic",
+          "when": "view == ragTopics && viewItem =~ /^topic(-skill-(on|off))?$/",
           "group": "inline@4"
         },
         {
           "command": "ragnarok.renameTopic",
-          "when": "view == ragTopics && viewItem == topic",
+          "when": "view == ragTopics && viewItem =~ /^topic(-skill-(on|off))?$/",
           "group": "inline@5"
+        },
+        {
+          "command": "ragnarok.toggleTopicSkill",
+          "when": "view == ragTopics && viewItem =~ /skill/",
+          "group": "inline@6"
         }
       ]
     },
