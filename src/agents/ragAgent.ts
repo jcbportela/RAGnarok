@@ -33,9 +33,6 @@ export interface RAGAgentOptions {
   /** Confidence threshold (0-1) */
   confidenceThreshold?: number;
 
-  /** Use LLM for query planning */
-  useLLM?: boolean;
-
   /** Retrieval strategy */
   retrievalStrategy?: RetrievalStrategy;
 
@@ -319,7 +316,6 @@ export class RAGAgent {
       workspaceContext: options.workspaceContext,
       maxSubQueries: options.maxIterations,
       defaultTopK: options.topK,
-      useLLM: options.useLLM,
       modelFamily: options.modelFamily,
     });
   }
@@ -340,8 +336,33 @@ export class RAGAgent {
       );
       const results = await Promise.all(promises);
       allResults.push(...results.flat());
+    } else if (plan.strategy === 'hybrid') {
+      // Hybrid: run high-priority sub-queries in parallel first, then rest sequentially
+      const highPriority = plan.subQueries.filter((sq: SubQuery) => sq.priority === 'high');
+      const rest = plan.subQueries.filter((sq: SubQuery) => sq.priority !== 'high');
+
+      if (highPriority.length > 0) {
+        const highResults = await Promise.all(
+          highPriority.map((sq: SubQuery) => this.executeSubQuery(sq, options))
+        );
+        allResults.push(...highResults.flat());
+      }
+      for (const subQuery of rest) {
+        const results = await this.executeSubQuery(subQuery, options);
+        allResults.push(...results);
+      }
+    } else if (plan.strategy === 'priority-based') {
+      // Execute in priority order: high → medium → low
+      const sorted = [...plan.subQueries].sort((a: SubQuery, b: SubQuery) => {
+        const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
+        return (order[a.priority || 'medium'] ?? 1) - (order[b.priority || 'medium'] ?? 1);
+      });
+      for (const subQuery of sorted) {
+        const results = await this.executeSubQuery(subQuery, options);
+        allResults.push(...results);
+      }
     } else {
-      // Execute sub-queries sequentially
+      // Sequential (default)
       for (const subQuery of plan.subQueries) {
         const results = await this.executeSubQuery(subQuery, options);
         allResults.push(...results);
@@ -541,7 +562,6 @@ export class RAGAgent {
       enableIterativeRefinement: options.enableIterativeRefinement ?? true,
       maxIterations: options.maxIterations ?? 3,
       confidenceThreshold: options.confidenceThreshold ?? 0.7,
-      useLLM: options.useLLM ?? false,
       retrievalStrategy: options.retrievalStrategy ?? RetrievalStrategy.HYBRID,
       topK: options.topK ?? 5,
       modelFamily: options.modelFamily || 'gpt-4o',

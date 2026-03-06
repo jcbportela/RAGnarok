@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 import * as fs from "fs/promises";
 import { TopicManager } from "./managers/topicManager";
 import { EmbeddingService } from "./embeddings/embeddingService";
-import { TopicTreeDataProvider } from "./topicTreeView";
+import { TopicTreeDataProvider, ConfigTreeDataProvider } from "./topicTreeView";
 import { COMMANDS } from "./utils/constants";
 import { Logger } from "./utils/logger";
 import { GitHubTokenManager } from "./utils/githubTokenManager";
@@ -19,18 +19,21 @@ export class CommandHandler {
   private topicManager: TopicManager;
   private embeddingService: EmbeddingService;
   private treeDataProvider: TopicTreeDataProvider;
+  private configDataProvider: ConfigTreeDataProvider;
   private context: vscode.ExtensionContext;
   private tokenManager: GitHubTokenManager;
 
   private constructor(
     context: vscode.ExtensionContext,
     topicManager: TopicManager,
-    treeDataProvider: TopicTreeDataProvider
+    treeDataProvider: TopicTreeDataProvider,
+    configDataProvider: ConfigTreeDataProvider
   ) {
     this.context = context;
     this.topicManager = topicManager;
     this.embeddingService = EmbeddingService.getInstance();
     this.treeDataProvider = treeDataProvider;
+    this.configDataProvider = configDataProvider;
     this.tokenManager = GitHubTokenManager.getInstance();
   }
 
@@ -39,10 +42,11 @@ export class CommandHandler {
    */
   public static async registerCommands(
     context: vscode.ExtensionContext,
-    treeDataProvider: TopicTreeDataProvider
+    treeDataProvider: TopicTreeDataProvider,
+    configDataProvider: ConfigTreeDataProvider
   ): Promise<void> {
     const topicManager = await TopicManager.getInstance();
-    const handler = new CommandHandler(context, topicManager, treeDataProvider);
+    const handler = new CommandHandler(context, topicManager, treeDataProvider, configDataProvider);
 
     context.subscriptions.push(
       vscode.commands.registerCommand(COMMANDS.CREATE_TOPIC, () =>
@@ -68,6 +72,19 @@ export class CommandHandler {
       ),
       vscode.commands.registerCommand(COMMANDS.CLEAR_DATABASE, () =>
         handler.clearDatabase()
+      ),
+      // Config tree view commands (delegated to ConfigTreeDataProvider)
+      vscode.commands.registerCommand(COMMANDS.SELECT_VSCODE_EMBEDDING_MODEL, () =>
+        configDataProvider.selectVscodeEmbeddingModel()
+      ),
+      vscode.commands.registerCommand(COMMANDS.SELECT_HF_EMBEDDING_MODEL, () =>
+        configDataProvider.selectHfEmbeddingModel()
+      ),
+      vscode.commands.registerCommand(COMMANDS.SELECT_LLM_MODEL, () =>
+        configDataProvider.selectLLMModel()
+      ),
+      vscode.commands.registerCommand(COMMANDS.EDIT_CONFIG_ITEM, (configKey: string) =>
+        configDataProvider.editConfigItem(configKey)
       ),
       // GitHub token management commands
       vscode.commands.registerCommand(COMMANDS.ADD_GITHUB_TOKEN, () =>

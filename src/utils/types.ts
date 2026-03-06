@@ -82,9 +82,6 @@ export interface RAGQueryParams {
   query: string;
   topK?: number;
   retrievalStrategy?: RetrievalStrategy;
-  // Note: Agentic RAG configuration is controlled via VS Code settings only
-  // Users cannot override agentic settings per query
-  useAgenticMode?: boolean;
 }
 
 export interface RAGQueryResult {

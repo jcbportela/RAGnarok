@@ -6,10 +6,11 @@
 import * as vscode from "vscode";
 import { TopicManager } from "./managers/topicManager";
 import { EmbeddingService } from "./embeddings/embeddingService";
+import { VscodeLmBackend } from "./embeddings/vscodeLmBackend";
 import { RAGTool } from "./ragTool";
 import { CommandHandler } from "./commands";
-import { TopicTreeDataProvider } from "./topicTreeView";
-import { VIEWS, STATE, COMMANDS, CONFIG } from "./utils/constants";
+import { TopicTreeDataProvider, ConfigTreeDataProvider } from "./topicTreeView";
+import { VIEWS, CONFIG, CONTEXT, COMMANDS } from "./utils/constants";
 import { Logger } from "./utils/logger";
 import { GitHubTokenManager } from "./utils/githubTokenManager";
 
@@ -29,22 +30,36 @@ export async function activate(context: vscode.ExtensionContext) {
     GitHubTokenManager.initialize(context);
     logger.info("GitHub token manager initialized");
 
-    // Register tree view
+    // Signal that the extension has started loading (viewsWelcome uses this)
+    vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.LOADED, false);
+
+    // Register Topics tree view
     const treeDataProvider = new TopicTreeDataProvider();
     const treeView = vscode.window.createTreeView(VIEWS.RAG_TOPICS, {
       treeDataProvider,
       showCollapseAll: true,
     });
     context.subscriptions.push(treeView);
-    context.subscriptions.push(treeDataProvider); // Dispose model change subscription
+    context.subscriptions.push(treeDataProvider);
+
+    // Register Configuration tree view (separate panel, always shows settings)
+    const configDataProvider = new ConfigTreeDataProvider();
+    const configView = vscode.window.createTreeView(VIEWS.RAG_CONFIG, {
+      treeDataProvider: configDataProvider,
+      showCollapseAll: false,
+    });
+    context.subscriptions.push(configView);
+    context.subscriptions.push(configDataProvider);
 
     // Register commands
-    await CommandHandler.registerCommands(context, treeDataProvider);
+    await CommandHandler.registerCommands(context, treeDataProvider, configDataProvider);
 
     // Load topics with error handling
     try {
       const topics = await topicManager.getAllTopics();
       logger.info(`Loaded ${topics.length} topics`);
+      vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.HAS_TOPICS, topics.length > 0);
+      vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.LOADED, true);
     } catch (dbError) {
       logger.error("Failed to load topics", { error: dbError });
       // If topics index is corrupted, offer to reset it
@@ -65,6 +80,8 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         logger.info("Database reset completed");
       }
+      // Mark as loaded even on error so welcome screen updates
+      vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.LOADED, true);
       // Don't throw - let the extension continue working
     }
 
@@ -101,37 +118,13 @@ export async function activate(context: vscode.ExtensionContext) {
       );
     }
 
-    // Show welcome message on first activation
-    const hasShownWelcome = context.globalState.get(
-      STATE.HAS_SHOWN_WELCOME,
-      false
-    );
-    if (!hasShownWelcome) {
-      const response = await vscode.window.showInformationMessage(
-        "Welcome to RAGnarōk! Create topics and add documents to enable RAG queries.",
-        "Create Topic",
-        "Learn More"
-      );
-
-      if (response === "Create Topic") {
-        vscode.commands.executeCommand(COMMANDS.CREATE_TOPIC);
-      } else if (response === "Learn More") {
-        vscode.env.openExternal(
-          vscode.Uri.parse("https://github.com/hyorman/ragnarok")
-        );
-      }
-
-      await context.globalState.update(STATE.HAS_SHOWN_WELCOME, true);
-    }
-
     // Register configuration change listener for embedding model
     const configChangeDisposable = vscode.workspace.onDidChangeConfiguration(
       async (event) => {
         const localModelPathSetting = `${CONFIG.ROOT}.${CONFIG.LOCAL_MODEL_PATH}`;
         const treeViewConfigPaths = [
           `${CONFIG.ROOT}.${CONFIG.RETRIEVAL_STRATEGY}`,
-          `${CONFIG.ROOT}.${CONFIG.USE_AGENTIC_MODE}`,
-          `${CONFIG.ROOT}.${CONFIG.AGENTIC_USE_LLM}`,
+          `${CONFIG.ROOT}.${CONFIG.AGENTIC_LLM_MODEL}`,
           `${CONFIG.ROOT}.${CONFIG.AGENTIC_MAX_ITERATIONS}`,
           `${CONFIG.ROOT}.${CONFIG.AGENTIC_CONFIDENCE_THRESHOLD}`,
           `${CONFIG.ROOT}.${CONFIG.AGENTIC_ITERATIVE_REFINEMENT}`,
@@ -167,8 +160,9 @@ export async function activate(context: vscode.ExtensionContext) {
             };
 
             await applyModel();
-            // Refresh the tree view so local models / current model are visible
+            // Refresh both tree views so local models / current model are visible
             treeDataProvider.refresh();
+            configDataProvider.refresh();
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : String(error);
@@ -181,11 +175,84 @@ export async function activate(context: vscode.ExtensionContext) {
           }
         }
 
+        // Handle Embedding Backend or VS Code Model ID change
+        const embeddingBackendSetting = `${CONFIG.ROOT}.${CONFIG.EMBEDDING_BACKEND}`;
+        const embeddingVscodeModelSetting = `${CONFIG.ROOT}.${CONFIG.EMBEDDING_VSCODE_MODEL_ID}`;
+        if (
+          event.affectsConfiguration(embeddingBackendSetting) ||
+          event.affectsConfiguration(embeddingVscodeModelSetting)
+        ) {
+          logger.info("Embedding backend configuration changed");
+
+          try {
+            // Before applying user-requested backend change, probe availability.
+            const config = vscode.workspace.getConfiguration(CONFIG.ROOT);
+            const requested = config.get<string>(CONFIG.EMBEDDING_BACKEND, 'auto');
+            const requestedModel = config.get<string>(CONFIG.EMBEDDING_VSCODE_MODEL_ID, '');
+
+            if (requested === 'vscodeLM') {
+              // Probe VS Code LM availability for the requested model id.
+              const probe = new VscodeLmBackend(requestedModel || undefined);
+              const ok = await probe.isAvailable();
+              if (!ok) {
+                logger.warn('Requested VS Code LM backend unavailable; reverting embeddingBackend setting to "auto"');
+                // Revert user setting back to 'auto' to avoid leaving the extension in a broken state.
+                try {
+                  await vscode.workspace.getConfiguration(CONFIG.ROOT).update(
+                    CONFIG.EMBEDDING_BACKEND,
+                    'auto',
+                    vscode.ConfigurationTarget.Workspace
+                  );
+                  vscode.window.showWarningMessage('Requested VS Code LM embedding backend is not available. Reverting to "auto".');
+                } catch (updateErr: any) {
+                  logger.error('Failed to update embeddingBackend setting to auto', { error: updateErr?.message ?? updateErr });
+                }
+              }
+            }
+
+            // Reset backend so it re-resolves from updated config
+            embeddingService.resetBackendSelection();
+
+            await vscode.window.withProgress(
+              {
+                location: vscode.ProgressLocation.Notification,
+                title: `RAGnarōk: Switching embedding backend...`,
+              },
+              async (progress) => {
+                progress.report({ message: "Resolving backend..." });
+                await embeddingService.initialize();
+
+                progress.report({ message: "Reinitializing services..." });
+                await topicManager.reinitializeWithNewModel();
+              }
+            );
+
+            const model = embeddingService.getCurrentModel();
+            const backend = embeddingService.getActiveBackendType();
+            logger.info(`Embedding backend switched: ${backend} (model: ${model})`);
+            vscode.window.showInformationMessage(
+              `RAGnarōk: Embedding backend set to "${backend}" (model: ${model})`
+            );
+            treeDataProvider.refresh();
+            configDataProvider.refresh();
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            logger.error("Failed to switch embedding backend", {
+              error: errorMessage,
+            });
+            vscode.window.showErrorMessage(
+              `RAGnarōk: Failed to switch embedding backend: ${errorMessage}`
+            );
+          }
+        }
+
         // Handle Common Database Path change
         if (event.affectsConfiguration(`${CONFIG.ROOT}.${CONFIG.COMMON_DATABASE_PATH}`)) {
           logger.info("Common database path configuration changed");
           await topicManager.loadCommonDatabase();
           treeDataProvider.refresh();
+          configDataProvider.refresh();
           vscode.window.showInformationMessage("Common database reloaded");
         }
 
@@ -197,6 +264,7 @@ export async function activate(context: vscode.ExtensionContext) {
             "Configuration affecting tree view changed, refreshing view"
           );
           treeDataProvider.refresh();
+          configDataProvider.refresh();
         }
       }
     );

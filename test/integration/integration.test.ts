@@ -108,9 +108,7 @@ describe('Integration Tests', function () {
 
       // Test planner
       const planner = new QueryPlannerAgent();
-      const plan = await planner.createPlan('compare Python and JavaScript', {
-        useLLM: false,
-      });
+      const plan = await planner.createPlan('compare Python and JavaScript');
 
       expect(plan).to.have.property('complexity');
       expect(plan).to.have.property('strategy');
@@ -149,7 +147,6 @@ describe('Integration Tests', function () {
       await agent.initialize(vectorStore);
 
       const result = await agent.query('What is Python used for?', {
-        useLLM: false,
         topK: 3,
       });
 
@@ -198,7 +195,6 @@ describe('Integration Tests', function () {
 
     it('should execute complete simple query workflow', async function () {
       const result = await ragAgent.query('What is Python?', {
-        useLLM: false,
         topK: 3,
       });
 
@@ -210,7 +206,6 @@ describe('Integration Tests', function () {
 
     it('should return relevant results for queries', async function () {
       const result = await ragAgent.query('Python programming', {
-        useLLM: false,
         topK: 5,
       });
 
@@ -272,7 +267,6 @@ describe('Integration Tests', function () {
 
     it('should handle complex comparison queries', async function () {
       const result = await ragAgent.query('compare Python and JavaScript', {
-        useLLM: false,
         topK: 5,
       });
 
@@ -284,8 +278,7 @@ describe('Integration Tests', function () {
 
     it('should decompose queries into sub-queries', async function () {
       const result = await ragAgent.query(
-        'Python and JavaScript and TypeScript programming',
-        { useLLM: false }
+        'Python and JavaScript and TypeScript programming'
       );
 
       expect(result.plan.subQueries.length).to.be.greaterThan(1);
@@ -294,7 +287,6 @@ describe('Integration Tests', function () {
 
     it('should deduplicate results from multiple sub-queries', async function () {
       const result = await ragAgent.query('JavaScript and TypeScript', {
-        useLLM: false,
         topK: 10,
       });
 
@@ -306,7 +298,6 @@ describe('Integration Tests', function () {
 
     it('should support iterative refinement when enabled', async function () {
       const result = await ragAgent.query('Python features and use cases', {
-        useLLM: false,
         enableIterativeRefinement: true,
         maxIterations: 2,
         confidenceThreshold: 0.8,
@@ -388,7 +379,7 @@ describe('Integration Tests', function () {
       const agent = new RAGAgent();
       await agent.initialize(emptyVectorStore);
 
-      const result = await agent.query('any query', { useLLM: false });
+      const result = await agent.query('any query');
 
       expect(result).to.be.an('object');
       expect(result.results).to.be.an('array');
@@ -419,7 +410,7 @@ describe('Integration Tests', function () {
       ];
 
       const results = await Promise.all(
-        queries.map((q) => agent.query(q, { useLLM: false, topK: 3 }))
+        queries.map((q) => agent.query(q, { topK: 3 }))
       );
 
       expect(results).to.have.lengthOf(3);
@@ -445,7 +436,7 @@ describe('Integration Tests', function () {
       await agent.initialize(vectorStore);
 
       const startTime = Date.now();
-      await agent.query('test query', { useLLM: false });
+      await agent.query('test query');
       const elapsed = Date.now() - startTime;
 
       expect(elapsed).to.be.lessThan(5000); // Should complete in under 5 seconds
@@ -470,13 +461,11 @@ describe('Integration Tests', function () {
       await agent.initialize(vectorStore);
 
       const vectorResult = await agent.query('test', {
-        useLLM: false,
         retrievalStrategy: RetrievalStrategy.VECTOR,
       });
       expect(vectorResult.metadata.strategy).to.equal(RetrievalStrategy.VECTOR);
 
       const hybridResult = await agent.query('test', {
-        useLLM: false,
         retrievalStrategy: RetrievalStrategy.HYBRID,
       });
       expect(hybridResult.metadata.strategy).to.equal(RetrievalStrategy.HYBRID);
@@ -499,7 +488,6 @@ describe('Integration Tests', function () {
       await agent.initialize(vectorStore);
 
       const result = await agent.query('document', {
-        useLLM: false,
         topK: 3,
       });
 

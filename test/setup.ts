@@ -13,11 +13,9 @@ const ragConfig = {
   chunkOverlap: 50,
   logLevel: 'info',
   retrievalStrategy: 'hybrid',
-  useAgenticMode: true,
   agenticMaxIterations: 3,
   agenticConfidenceThreshold: 0.7,
   agenticIterativeRefinement: true,
-  agenticUseLLM: false,
   agenticLLMModel: 'gpt-4o',
   agenticIncludeWorkspaceContext: false,
 };
