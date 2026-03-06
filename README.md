@@ -54,7 +54,18 @@ RAGnarōk supports multiple embedding providers via a pluggable backend system:
 
 ### 🔧 Enable VS Code LM embeddings (proposed API)
 
-To use the VS Code Language Model embeddings API (`vscode.lm.computeEmbeddings`) you must enable proposed APIs for this extension and start the Extension Development Host with the `--enable-proposed-api` flag referencing the extension id.
+To use the VS Code Language Model embeddings API (`vscode.lm.computeEmbeddings`) you must enable proposed APIs for this extension and start VS Code with the `--enable-proposed-api` flag referencing the extension id.
+
+You can add the flag as a runtime argument in VS Code:
+`Ctrl+Shift+P` -> "Preferences: Configure Runtime Arguments" and add the following to `argv.json`:
+
+```json
+{
+    "enable-proposed-api": ["hyorman.ragnarok"]
+}
+```
+
+Alternatively, launch the Extension Development Host from the command line:
 
 ```bash
 code --extensionDevelopmentPath=. --enable-proposed-api hyorman.ragnarok
@@ -70,7 +81,7 @@ Notes:
 ### 🧠 **Agentic RAG with Query Planning**
 
 - **Intelligent Query Decomposition**: Automatically breaks complex queries into sub-queries
--- **LLM-Powered Planning**: Uses Copilot (VS Code LM API) models such as `gpt-4o` for advanced reasoning (Copilot required; no external API key). LLM usage is optional
+- **LLM-Powered Planning**: Uses Copilot (VS Code LM API) models such as `gpt-4o` for advanced reasoning (Copilot required; no external API key)
 - **Heuristic Fallback**: Works without LLM using rule-based planning
 - **Iterative Refinement**: Confidence-based iteration for high-quality results
 - **Parallel/Sequential Execution**: Smart execution strategy based on query complexity
@@ -365,9 +376,6 @@ Reloads the topic tree view. Useful after importing topics or external changes.
 
 ```json
 {
-  // Enable agentic RAG with query planning
-  "ragnarok.useAgenticMode": true,
-
   // Maximum refinement iterations (1-10)
   "ragnarok.agenticMaxIterations": 3,
 
@@ -377,10 +385,7 @@ Reloads the topic tree view. Useful after importing topics or external changes.
   // Enable iterative refinement
   "ragnarok.agenticIterativeRefinement": true,
 
-  // Use LLM (Copilot) for intelligent query planning (requires Copilot)
-  "ragnarok.agenticUseLLM": false,
-
-  // LLM model: gpt-4o, gpt-4o-mini, gpt-3.5-turbo (when agenticUseLLM is true)
+  // LLM model: gpt-4o, gpt-4o-mini, gpt-3.5-turbo
   "ragnarok.agenticLLMModel": "gpt-4o",
 
   // Include workspace context (selected code, active file, imports, symbols)

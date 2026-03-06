@@ -104,9 +104,6 @@ export class RAGTool {
 
       logger.info(`Topic matched: ${topicMatch.topic.name} (${topicMatch.matchType}), ${stats.documentCount} documents, ${stats.chunkCount} chunks`);
 
-      // Determine if we should use agentic mode
-      const useAgenticMode = params.useAgenticMode ?? config.get<boolean>(CONFIG.USE_AGENTIC_MODE, true);
-
       // Get retrieval strategy (from query params, or config, or default to hybrid)
       const retrievalStrategy = params.retrievalStrategy ??
         (config.get<string>(CONFIG.RETRIEVAL_STRATEGY, RetrievalStrategy.HYBRID) as RetrievalStrategy);
@@ -114,72 +111,42 @@ export class RAGTool {
       // Get or create RAG agent for this topic
       const agent = await this.getOrCreateAgent(topicMatch.topic.id);
 
-      let ragResult: any; // Will be typed by RAGResult or simpleQuery result
-      let agenticMetadata;
+      logger.info('Using agentic RAG mode');
 
-      if (useAgenticMode) {
-        logger.info('Using agentic RAG mode');
+      // Build agentic options from params and config
+      const agenticOptions = this.buildAgenticOptions(params, config, retrievalStrategy);
 
-        // Build agentic options from params and config
-        const agenticOptions = this.buildAgenticOptions(params, config, retrievalStrategy);
-
-        // Get workspace context (if LLM enabled and includeWorkspaceContext is true)
-        const includeWorkspace = config.get<boolean>(CONFIG.AGENTIC_INCLUDE_WORKSPACE, true);
-        if (agenticOptions.useLLM && includeWorkspace) {
-          const wsContext = await WorkspaceContextProvider.getContext({
-            includeSelection: true,
-            includeActiveFile: true,
-            includeWorkspace: true,
-            maxCodeLength: 1000,
-          });
-          // Convert workspace context to string for the agent
-          agenticOptions.workspaceContext = JSON.stringify(wsContext, null, 2);
-        }
-
-        // Execute agentic query with RAGAgent
-        ragResult = await agent.query(params.query, agenticOptions);
-
-        // Convert RAGAgent result to agenticMetadata format
-        agenticMetadata = {
-          mode: 'agentic' as const,
-          steps: ragResult.plan.subQueries.map((sq: any, idx: number) => ({
-            stepNumber: idx + 1,
-            query: sq.query,
-            strategy: ragResult.plan.strategy,
-            resultsCount: ragResult.results.filter((r: any) => r.document?.metadata?.subQueryIndex === idx).length,
-            confidence: ragResult.avgConfidence,
-            reasoning: sq.reasoning,
-          })),
-          totalIterations: ragResult.iterations,
-          queryComplexity: ragResult.plan.complexity,
-          confidence: ragResult.avgConfidence,
-        };
-      } else {
-        logger.info('Using simple RAG mode');
-
-        // Use simple query (bypasses planning)
-        const simpleResults = await agent.simpleQuery(params.query, topK, retrievalStrategy);
-
-        ragResult = {
-          query: params.query,
-          results: simpleResults,
-          iterations: 1,
-          avgConfidence: simpleResults.length > 0
-            ? simpleResults.reduce((sum, r) => sum + r.score, 0) / simpleResults.length
-            : 0,
-          plan: {
-            originalQuery: params.query,
-            complexity: 'simple' as const,
-            subQueries: [{ query: params.query, reasoning: 'Direct retrieval', priority: 'high' as const }],
-            strategy: 'sequential' as const,
-            explanation: 'Simple single-shot retrieval',
-          },
-        };
-
-        agenticMetadata = {
-          mode: 'simple' as const,
-        };
+      // Get workspace context (if includeWorkspaceContext is true)
+      const includeWorkspace = config.get<boolean>(CONFIG.AGENTIC_INCLUDE_WORKSPACE, true);
+      if (includeWorkspace) {
+        const wsContext = await WorkspaceContextProvider.getContext({
+          includeSelection: true,
+          includeActiveFile: true,
+          includeWorkspace: true,
+          maxCodeLength: 1000,
+        });
+        // Convert workspace context to string for the agent
+        agenticOptions.workspaceContext = JSON.stringify(wsContext, null, 2);
       }
+
+      // Execute agentic query with RAGAgent
+      const ragResult = await agent.query(params.query, agenticOptions);
+
+      // Convert RAGAgent result to agenticMetadata format
+      const agenticMetadata = {
+        mode: 'agentic' as const,
+        steps: ragResult.plan.subQueries.map((sq: any, idx: number) => ({
+          stepNumber: idx + 1,
+          query: sq.query,
+          strategy: ragResult.plan.strategy,
+          resultsCount: ragResult.results.filter((r: any) => r.document?.metadata?.subQueryIndex === idx).length,
+          confidence: ragResult.avgConfidence,
+          reasoning: sq.reasoning,
+        })),
+        totalIterations: ragResult.iterations,
+        queryComplexity: ragResult.plan.complexity,
+        confidence: ragResult.avgConfidence,
+      };
 
       // Format results for RAGQueryResult
       const formattedResults: RAGQueryResult = {
@@ -291,7 +258,6 @@ export class RAGTool {
     enableIterativeRefinement?: boolean;
     maxIterations?: number;
     confidenceThreshold?: number;
-    useLLM?: boolean;
     retrievalStrategy?: RetrievalStrategy;
     workspaceContext?: string;
     modelFamily?: string;
@@ -301,7 +267,6 @@ export class RAGTool {
       enableIterativeRefinement: config.get<boolean>(CONFIG.AGENTIC_ITERATIVE_REFINEMENT, true),
       maxIterations: config.get<number>(CONFIG.AGENTIC_MAX_ITERATIONS, 3),
       confidenceThreshold: config.get<number>(CONFIG.AGENTIC_CONFIDENCE_THRESHOLD, 0.7),
-      useLLM: config.get<boolean>(CONFIG.AGENTIC_USE_LLM, true),
       retrievalStrategy: retrievalStrategy,
       modelFamily: config.get<string>(CONFIG.AGENTIC_LLM_MODEL, 'gpt-4o-mini'),
     };

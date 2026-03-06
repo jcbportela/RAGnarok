@@ -10,7 +10,7 @@ import { VscodeLmBackend } from "./embeddings/vscodeLmBackend";
 import { RAGTool } from "./ragTool";
 import { CommandHandler } from "./commands";
 import { TopicTreeDataProvider, ConfigTreeDataProvider } from "./topicTreeView";
-import { VIEWS, CONFIG } from "./utils/constants";
+import { VIEWS, CONFIG, CONTEXT, COMMANDS } from "./utils/constants";
 import { Logger } from "./utils/logger";
 import { GitHubTokenManager } from "./utils/githubTokenManager";
 import { SkillFileManager } from "./managers/skillFileManager";
@@ -41,13 +41,13 @@ export async function activate(context: vscode.ExtensionContext) {
     logger.info("Skill file manager initialized");
 
     // Signal that the extension has started loading (viewsWelcome uses this)
-    vscode.commands.executeCommand("setContext", "ragnarok.loaded", false);
+    vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.LOADED, false);
 
     // Set initial context key for generateSkillFiles (used by when-clauses in tree view menus)
     const initialSkillSetting = vscode.workspace
       .getConfiguration(CONFIG.ROOT)
       .get<boolean>(CONFIG.GENERATE_SKILL_FILES, true);
-    vscode.commands.executeCommand("setContext", "ragnarok.generateSkillFiles", initialSkillSetting);
+    vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, "ragnarok.generateSkillFiles", initialSkillSetting);
 
     // Register Topics tree view
     const treeDataProvider = new TopicTreeDataProvider(skillFileManager);
@@ -68,18 +68,14 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(configDataProvider);
 
     // Register commands
-    await CommandHandler.registerCommands(context, treeDataProvider, skillFileManager);
+    await CommandHandler.registerCommands(context, treeDataProvider, configDataProvider, skillFileManager);
 
     // Load topics with error handling
     try {
       const topics = await topicManager.getAllTopics();
       logger.info(`Loaded ${topics.length} topics`);
-      vscode.commands.executeCommand(
-        "setContext",
-        "ragnarok.hasTopics",
-        topics.length > 0
-      );
-      vscode.commands.executeCommand("setContext", "ragnarok.loaded", true);
+      vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.HAS_TOPICS, topics.length > 0);
+      vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.LOADED, true);
 
       // Reconcile skill files: generate any missing files for topics that should have them
       await skillFileManager.reconcile(topics);
@@ -104,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext) {
         logger.info("Database reset completed");
       }
       // Mark as loaded even on error so welcome screen updates
-      vscode.commands.executeCommand("setContext", "ragnarok.loaded", true);
+      vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, CONTEXT.LOADED, true);
       // Don't throw - let the extension continue working
     }
 
@@ -147,8 +143,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const localModelPathSetting = `${CONFIG.ROOT}.${CONFIG.LOCAL_MODEL_PATH}`;
         const treeViewConfigPaths = [
           `${CONFIG.ROOT}.${CONFIG.RETRIEVAL_STRATEGY}`,
-          `${CONFIG.ROOT}.${CONFIG.USE_AGENTIC_MODE}`,
-          `${CONFIG.ROOT}.${CONFIG.AGENTIC_USE_LLM}`,
+          `${CONFIG.ROOT}.${CONFIG.AGENTIC_LLM_MODEL}`,
           `${CONFIG.ROOT}.${CONFIG.AGENTIC_MAX_ITERATIONS}`,
           `${CONFIG.ROOT}.${CONFIG.AGENTIC_CONFIDENCE_THRESHOLD}`,
           `${CONFIG.ROOT}.${CONFIG.AGENTIC_ITERATIVE_REFINEMENT}`,
@@ -287,7 +282,7 @@ export async function activate(context: vscode.ExtensionContext) {
             .get<boolean>(CONFIG.GENERATE_SKILL_FILES, true);
 
           // Update context key so tree view when-clauses re-evaluate
-          vscode.commands.executeCommand("setContext", "ragnarok.generateSkillFiles", enabled);
+          vscode.commands.executeCommand(COMMANDS.SET_CONTEXT, "ragnarok.generateSkillFiles", enabled);
 
           if (enabled) {
             // Generate skill files for all existing topics

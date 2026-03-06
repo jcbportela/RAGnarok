@@ -8,7 +8,7 @@ import * as fs from "fs/promises";
 import { TopicManager } from "./managers/topicManager";
 import { EmbeddingService } from "./embeddings/embeddingService";
 import { SkillFileManager } from "./managers/skillFileManager";
-import { TopicTreeDataProvider } from "./topicTreeView";
+import { TopicTreeDataProvider, ConfigTreeDataProvider } from "./topicTreeView";
 import { COMMANDS, CONFIG, TREE_CONFIG_KEY } from "./utils/constants";
 import { Logger } from "./utils/logger";
 import { GitHubTokenManager } from "./utils/githubTokenManager";
@@ -20,6 +20,7 @@ export class CommandHandler {
   private topicManager: TopicManager;
   private embeddingService: EmbeddingService;
   private treeDataProvider: TopicTreeDataProvider;
+  private configDataProvider: ConfigTreeDataProvider;
   private context: vscode.ExtensionContext;
   private tokenManager: GitHubTokenManager;
   private skillFileManager: SkillFileManager;
@@ -28,12 +29,14 @@ export class CommandHandler {
     context: vscode.ExtensionContext,
     topicManager: TopicManager,
     treeDataProvider: TopicTreeDataProvider,
+    configDataProvider: ConfigTreeDataProvider,
     skillFileManager: SkillFileManager
   ) {
     this.context = context;
     this.topicManager = topicManager;
     this.embeddingService = EmbeddingService.getInstance();
     this.treeDataProvider = treeDataProvider;
+    this.configDataProvider = configDataProvider;
     this.tokenManager = GitHubTokenManager.getInstance();
     this.skillFileManager = skillFileManager;
   }
@@ -44,10 +47,11 @@ export class CommandHandler {
   public static async registerCommands(
     context: vscode.ExtensionContext,
     treeDataProvider: TopicTreeDataProvider,
+    configDataProvider: ConfigTreeDataProvider,
     skillFileManager: SkillFileManager
   ): Promise<void> {
     const topicManager = await TopicManager.getInstance();
-    const handler = new CommandHandler(context, topicManager, treeDataProvider, skillFileManager);
+    const handler = new CommandHandler(context, topicManager, treeDataProvider, configDataProvider, skillFileManager);
 
     context.subscriptions.push(
       vscode.commands.registerCommand(COMMANDS.CREATE_TOPIC, () =>
@@ -74,18 +78,18 @@ export class CommandHandler {
       vscode.commands.registerCommand(COMMANDS.CLEAR_DATABASE, () =>
         handler.clearDatabase()
       ),
-      // Embedding model selection
+      // Config tree view commands (delegated to ConfigTreeDataProvider)
       vscode.commands.registerCommand(COMMANDS.SELECT_VSCODE_EMBEDDING_MODEL, () =>
-        handler.selectVscodeEmbeddingModel()
+        configDataProvider.selectVscodeEmbeddingModel()
       ),
       vscode.commands.registerCommand(COMMANDS.SELECT_HF_EMBEDDING_MODEL, () =>
-        handler.selectHfEmbeddingModel()
+        configDataProvider.selectHfEmbeddingModel()
       ),
       vscode.commands.registerCommand(COMMANDS.SELECT_LLM_MODEL, () =>
-        handler.selectLLMModel()
+        configDataProvider.selectLLMModel()
       ),
       vscode.commands.registerCommand(COMMANDS.EDIT_CONFIG_ITEM, (configKey: string) =>
-        handler.editConfigItem(configKey)
+        configDataProvider.editConfigItem(configKey)
       ),
       // GitHub token management commands
       vscode.commands.registerCommand(COMMANDS.ADD_GITHUB_TOKEN, () =>
@@ -1511,16 +1515,6 @@ export class CommandHandler {
           'bm25': 'BM25 — pure keyword search (no embeddings)',
         },
         label: 'Retrieval Strategy',
-      },
-      [TREE_CONFIG_KEY.AGENTIC_MODE]: {
-        settingKey: CONFIG.USE_AGENTIC_MODE,
-        type: 'boolean',
-        label: 'Agentic Mode',
-      },
-      [TREE_CONFIG_KEY.USE_LLM]: {
-        settingKey: CONFIG.AGENTIC_USE_LLM,
-        type: 'boolean',
-        label: 'LLM Planning',
       },
       [TREE_CONFIG_KEY.ITERATIVE_REFINEMENT]: {
         settingKey: CONFIG.AGENTIC_ITERATIVE_REFINEMENT,

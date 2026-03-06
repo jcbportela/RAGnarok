@@ -119,12 +119,6 @@
           ],
           "order": 9
         },
-        "ragnarok.useAgenticMode": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "**Enable Agentic RAG:** Multi-step retrieval with query planning, iterative refinement, and result evaluation. When disabled, uses simple single-shot retrieval.\n\n📚 [Learn more about Agentic RAG](https://github.com/hyorman/ragnarok#agentic-rag)",
-          "order": 10
-        },
         "ragnarok.agenticMaxIterations": {
           "type": "number",
           "default": 3,
@@ -146,12 +140,6 @@
           "default": true,
           "markdownDescription": "Generate follow-up queries to fill information gaps detected during retrieval.\n\n⚠️ _Only applies when Agentic Mode is enabled_",
           "order": 13
-        },
-        "ragnarok.agenticUseLLM": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "**Use LLM (Copilot) for intelligent planning:** Uses Copilot for query decomposition and result evaluation instead of rule-based heuristics.\n\n**Requirements:**\n- ✅ GitHub Copilot subscription\n- ✅ GitHub Copilot extension\n\n**Trade-offs:**\n- ✅ Much more intelligent\n- ✅ Context-aware planning\n- ⚠️ 2-3x slower\n- ⚠️ Uses Copilot API quota\n\n⚠️ _Only applies when Agentic Mode is enabled_",
-          "order": 14
         },
         "ragnarok.agenticLLMModel": {
           "type": "string",
@@ -393,10 +381,6 @@
                 "ensemble",
                 "bm25"
               ]
-            },
-            "useAgenticMode": {
-              "type": "boolean",
-              "description": "Enable agentic RAG with multi-step query planning and iterative retrieval (optional, defaults to extension settings). Note: All agentic configuration (iterations, confidence, etc.) is controlled via VS Code settings and cannot be overridden per query."
             }
           },
           "required": [

@@ -30,8 +30,12 @@ export class VscodeLmBackend implements EmbeddingBackend {
   private dimension: number | null = null;
   private initialized = false;
 
-  constructor(modelId?: string) {
+  /** The LM API surface — defaults to `vscode.lm`, injectable for testing. */
+  private lmApi: any;
+
+  constructor(modelId?: string, options?: { lmApi?: any }) {
     this.modelId = modelId ?? '';
+    this.lmApi = options?.lmApi ?? (vscode.lm as any);
     this.logger = new Logger('VscodeLmBackend');
   }
 
@@ -41,14 +45,16 @@ export class VscodeLmBackend implements EmbeddingBackend {
 
   async isAvailable(): Promise<boolean> {
     try {
+      const lm = this.lmApi;
+
       // 1. Is the proposed API surface present?
-      if (!vscode.lm || typeof (vscode.lm as any).computeEmbeddings !== 'function') {
+      if (!lm || typeof lm.computeEmbeddings !== 'function') {
         this.logger.debug('vscode.lm.computeEmbeddings API is not available');
         return false;
       }
 
       // 2. Are there any registered embedding models?
-      const models: string[] | undefined = (vscode.lm as any).embeddingModels;
+      const models: string[] | undefined = lm.embeddingModels;
       if (!models || models.length === 0) {
         this.logger.debug('No embedding models registered with vscode.lm');
         return false;
@@ -86,7 +92,12 @@ export class VscodeLmBackend implements EmbeddingBackend {
 
     const available = await this.isAvailable();
     if (!available) {
-      const registeredModels: string[] = (vscode.lm as any)?.embeddingModels ?? [];
+      let registeredModels: string[] = [];
+      try {
+        registeredModels = this.lmApi?.embeddingModels ?? [];
+      } catch {
+        // API may throw if the proposed embeddings API is not enabled
+      }
       throw new Error(
         `VS Code LM embedding backend is not available. ` +
         `Ensure the proposed "embeddings" API is enabled and an embeddings provider is registered. ` +
@@ -109,7 +120,7 @@ export class VscodeLmBackend implements EmbeddingBackend {
     }
 
     try {
-      const result: { values: number[] } = await (vscode.lm as any).computeEmbeddings(
+      const result: { values: number[] } = await this.lmApi.computeEmbeddings(
         this.modelId,
         text
       );
@@ -147,7 +158,7 @@ export class VscodeLmBackend implements EmbeddingBackend {
 
     try {
       // The proposed API accepts string[] and returns Embedding[]
-      const results: Array<{ values: number[] }> = await (vscode.lm as any).computeEmbeddings(
+      const results: Array<{ values: number[] }> = await this.lmApi.computeEmbeddings(
         this.modelId,
         texts
       );

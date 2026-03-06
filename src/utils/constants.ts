@@ -29,11 +29,9 @@ export const CONFIG = {
   EMBEDDING_BACKEND: "embeddingBackend",
   EMBEDDING_VSCODE_MODEL_ID: "embeddingVscodeModelId",
   // Agentic RAG configuration
-  USE_AGENTIC_MODE: "useAgenticMode",
   AGENTIC_MAX_ITERATIONS: "agenticMaxIterations",
   AGENTIC_CONFIDENCE_THRESHOLD: "agenticConfidenceThreshold",
   AGENTIC_ITERATIVE_REFINEMENT: "agenticIterativeRefinement",
-  AGENTIC_USE_LLM: "agenticUseLLM",
   AGENTIC_LLM_MODEL: "agenticLLMModel",
   AGENTIC_INCLUDE_WORKSPACE: "agenticIncludeWorkspaceContext",
   // Common database configuration
@@ -54,6 +52,9 @@ export const DEFAULTS = {
  * Command identifiers
  */
 export const COMMANDS = {
+  // Built-in VS Code command
+  SET_CONTEXT: "setContext",
+  // Extension commands
   CREATE_TOPIC: "ragnarok.createTopic",
   DELETE_TOPIC: "ragnarok.deleteTopic",
   ADD_DOCUMENT: "ragnarok.addDocument",
@@ -95,6 +96,14 @@ export const STATE = {
 } as const;
 
 /**
+ * VS Code context keys (used with setContext for when-clauses)
+ */
+export const CONTEXT = {
+  LOADED: "ragnarok.loaded",
+  HAS_TOPICS: "ragnarok.hasTopics",
+} as const;
+
+/**
  * Tool identifiers
  */
 export const TOOLS = {
@@ -113,8 +122,7 @@ export const TREE_CONFIG_KEY = {
   CHUNK_SIZE: "chunk-size",
   CHUNK_OVERLAP: "chunk-overlap",
   LOG_LEVEL: "log-level",
-  AGENTIC_MODE: "agentic-mode",
-  USE_LLM: "use-llm",
+
   LLM_MODEL: "llm-model",
   ITERATIVE_REFINEMENT: "iterative-refinement",
   INCLUDE_WORKSPACE_CONTEXT: "include-workspace-context",

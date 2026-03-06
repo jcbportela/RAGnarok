@@ -8,18 +8,18 @@
  * - Fallback from VS Code LM to HuggingFace
  * - Dimension validation
  *
- * NOTE: These tests mock the `vscode` module so they can run both inside the
- * VS Code test-electron runner and (with the Module mock below) standalone.
+ * Uses constructor-based dependency injection ({@link VscodeLmBackend}'s
+ * `options.lmApi`) to bypass the real vscode.lm proposed API.
  */
 
 import { expect } from 'chai';
-import Module from 'module';
+import { VscodeLmBackend } from '../../src/embeddings/vscodeLmBackend';
 
 // ---------------------------------------------------------------------------
-// Minimal VS Code mock (enough for backend tests)
+// Minimal LM API mock (enough for backend tests)
 // ---------------------------------------------------------------------------
 
-const createMockVscode = (options?: {
+const createMockLmApi = (options?: {
   hasEmbeddingsApi?: boolean;
   models?: string[];
   embedResult?: { values: number[] };
@@ -37,143 +37,69 @@ const createMockVscode = (options?: {
     ...options,
   };
 
+  if (!opts.hasEmbeddingsApi) {
+    // Simulate missing API surface
+    return undefined;
+  }
+
   return {
-    lm: opts.hasEmbeddingsApi
-      ? {
-          embeddingModels: opts.models,
-          onDidChangeEmbeddingModels: { subscribe: () => ({ dispose: () => {} }) },
-          computeEmbeddings: async (modelId: string, input: string | string[]) => {
-            if (opts.shouldThrow) {
-              throw new Error(opts.throwMessage);
-            }
-            if (Array.isArray(input)) {
-              return (
-                opts.embedBatchResult ??
-                input.map(() => ({ ...opts.embedResult }))
-              );
-            }
-            return { ...opts.embedResult };
-          },
-        }
-      : undefined,
-    workspace: {
-      getConfiguration: () => ({
-        get: (key: string, defaultValue: any) => defaultValue,
-      }),
-    },
-    window: {
-      showInformationMessage: () => {},
-      showWarningMessage: () => {},
-      showErrorMessage: () => {},
-      withProgress: async (_opts: any, task: any) => {
-        return await task({ report: () => {} });
-      },
-      createOutputChannel: () => ({
-        appendLine: () => {},
-        append: () => {},
-        clear: () => {},
-        show: () => {},
-        hide: () => {},
-        dispose: () => {},
-        replace: () => {},
-        name: 'RAGnarōk',
-      }),
-    },
-    ProgressLocation: { Notification: 15 },
-    Disposable: class {
-      constructor(private fn: () => void) {}
-      dispose() { this.fn(); }
+    embeddingModels: opts.models,
+    onDidChangeEmbeddingModels: { subscribe: () => ({ dispose: () => {} }) },
+    computeEmbeddings: async (_modelId: string, input: string | string[]) => {
+      if (opts.shouldThrow) {
+        throw new Error(opts.throwMessage);
+      }
+      if (Array.isArray(input)) {
+        return (
+          opts.embedBatchResult ??
+          input.map(() => ({ ...opts.embedResult }))
+        );
+      }
+      return { ...opts.embedResult };
     },
   };
 };
 
 // ---------------------------------------------------------------------------
-// Install module-level mock for 'vscode' so require('vscode') resolves.
-//
-// IMPORTANT: We keep a single mutable reference (`vscodeMock`) and mutate its
-// `lm` property in tests.  Node caches the first `require('vscode')` result so
-// returning a *new* object from _load would not update already-imported modules.
+// Helper: create a backend with injected mock LM API
 // ---------------------------------------------------------------------------
-const vscodeMock: any = createMockVscode();
-
-const originalRequire = (Module as any)._resolveFilename;
-(Module as any)._resolveFilename = function (
-  request: string,
-  parent: any,
-  isMain: boolean,
-  options: any,
-) {
-  if (request === 'vscode') {
-    return '__vscode_mock__';
-  }
-  return originalRequire.call(this, request, parent, isMain, options);
+const createBackend = (
+  modelId?: string,
+  lmApiOptions?: Parameters<typeof createMockLmApi>[0],
+) => {
+  const lmApi = createMockLmApi(lmApiOptions);
+  return new VscodeLmBackend(modelId, { lmApi });
 };
-
-const originalLoad = (Module as any)._load;
-(Module as any)._load = function (
-  request: string,
-  parent: any,
-  isMain: boolean,
-) {
-  if (request === '__vscode_mock__' || request === 'vscode') {
-    return vscodeMock;
-  }
-  return originalLoad.call(this, request, parent, isMain);
-};
-
-(global as any).vscode = vscodeMock;
-
-// The imports must come AFTER the mock is installed
-import { VscodeLmBackend } from '../../src/embeddings/vscodeLmBackend';
 
 describe('EmbeddingBackend Abstraction', function () {
   this.timeout(10000);
-
-  // Helper to swap the mock's lm property in-place (the single vscodeMock
-  // reference is cached by Node's require – we must mutate, not replace).
-  const setMock = (options?: Parameters<typeof createMockVscode>[0]) => {
-    const fresh = createMockVscode(options);
-    // Mutate the cached object's mutable properties
-    vscodeMock.lm = fresh.lm;
-    vscodeMock.workspace = fresh.workspace;
-    vscodeMock.window = fresh.window;
-  };
-
-  // Reset mock before each test
-  beforeEach(() => {
-    setMock();
-  });
 
   // ---------------------------------------------------------------------------
   // VscodeLmBackend — availability
   // ---------------------------------------------------------------------------
   describe('VscodeLmBackend.isAvailable()', () => {
     it('should return true when API and models are present', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       expect(await backend.isAvailable()).to.be.true;
     });
 
     it('should return false when embeddings API is missing', async () => {
-      setMock({ hasEmbeddingsApi: false });
-      const backend = new VscodeLmBackend();
+      const backend = createBackend(undefined, { hasEmbeddingsApi: false });
       expect(await backend.isAvailable()).to.be.false;
     });
 
     it('should return false when no models are registered', async () => {
-      setMock({ models: [] });
-      const backend = new VscodeLmBackend();
+      const backend = createBackend(undefined, { models: [] });
       expect(await backend.isAvailable()).to.be.false;
     });
 
     it('should return false when requested model is not in the list', async () => {
-      setMock({ models: ['model-a'] });
-      const backend = new VscodeLmBackend('model-b');
+      const backend = createBackend('model-b', { models: ['model-a'] });
       expect(await backend.isAvailable()).to.be.false;
     });
 
     it('should auto-select first model when none is configured', async () => {
-      setMock({ models: ['auto-selected-model'] });
-      const backend = new VscodeLmBackend(); // no model specified
+      const backend = createBackend(undefined, { models: ['auto-selected-model'] });
       const available = await backend.isAvailable();
       expect(available).to.be.true;
       // The internal modelId should now be set
@@ -186,22 +112,21 @@ describe('EmbeddingBackend Abstraction', function () {
   // ---------------------------------------------------------------------------
   describe('VscodeLmBackend.embed()', () => {
     it('should return a number[] embedding', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       const embedding = await backend.embed('hello world');
       expect(embedding).to.be.an('array');
       expect(embedding).to.deep.equal([0.1, 0.2, 0.3, 0.4]);
     });
 
     it('should set the dimension after first embed', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       expect(backend.getDimension()).to.be.null;
       await backend.embed('test');
       expect(backend.getDimension()).to.equal(4);
     });
 
     it('should throw on empty embedding values', async () => {
-      setMock({ embedResult: { values: [] } });
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001', { embedResult: { values: [] } });
       try {
         await backend.embed('test');
         expect.fail('Should have thrown');
@@ -211,11 +136,10 @@ describe('EmbeddingBackend Abstraction', function () {
     });
 
     it('should throw when provider throws', async () => {
-      setMock({
+      const backend = createBackend('test-model-001', {
         shouldThrow: true,
         throwMessage: 'Provider not available',
       });
-      const backend = new VscodeLmBackend('test-model-001');
       try {
         await backend.embed('test');
         expect.fail('Should have thrown');
@@ -230,7 +154,7 @@ describe('EmbeddingBackend Abstraction', function () {
   // ---------------------------------------------------------------------------
   describe('VscodeLmBackend.embedBatch()', () => {
     it('should return consistent embeddings for batch input', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       const results = await backend.embedBatch(['a', 'b', 'c']);
       expect(results).to.have.length(3);
       results.forEach((r) => {
@@ -239,34 +163,30 @@ describe('EmbeddingBackend Abstraction', function () {
     });
 
     it('should return empty array for empty input', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       const results = await backend.embedBatch([]);
       expect(results).to.deep.equal([]);
     });
 
     it('should report progress', async () => {
       const progressValues: number[] = [];
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       await backend.embedBatch(['a', 'b'], (p) => progressValues.push(p));
       expect(progressValues).to.include(1.0);
     });
 
     it('should detect inconsistent dimensions', async () => {
-      setMock({
+      const backend = createBackend('test-model-001', {
         embedBatchResult: [
           { values: [0.1, 0.2, 0.3] },
           { values: [0.1, 0.2] }, // shorter!
         ],
       });
-      const backend = new VscodeLmBackend('test-model-001');
       // The batch call will fail dimension validation, then fallback to sequential
-      // which will also produce inconsistent results but individually they pass
-      // Actually with our mock the sequential path will produce the batch results again
-      // Let's test that the error is surfaced or handled
+      // which uses the default embedResult (consistent dimensions)
       try {
         const results = await backend.embedBatch(['x', 'y']);
         // If fallback to sequential worked, each individual embed returns consistent results
-        // from the single-embed path (which uses embedResult, not embedBatchResult)
         expect(results).to.have.length(2);
       } catch (e: any) {
         // Also acceptable: error is propagated
@@ -280,7 +200,7 @@ describe('EmbeddingBackend Abstraction', function () {
   // ---------------------------------------------------------------------------
   describe('VscodeLmBackend.dispose()', () => {
     it('should reset state on dispose', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       await backend.embed('test');
       expect(backend.getDimension()).to.equal(4);
 
@@ -294,19 +214,18 @@ describe('EmbeddingBackend Abstraction', function () {
   // ---------------------------------------------------------------------------
   describe('Backend Selection (EmbeddingBackendType)', () => {
     it('should have the correct name property', () => {
-      const backend = new VscodeLmBackend();
+      const backend = createBackend();
       expect(backend.name).to.equal('vscodeLM');
     });
 
     it('should initialize successfully with a valid model', async () => {
-      const backend = new VscodeLmBackend('test-model-001');
+      const backend = createBackend('test-model-001');
       await backend.initialize();
       // No error means success
     });
 
     it('should throw on initialize when API is not available', async () => {
-      setMock({ hasEmbeddingsApi: false });
-      const backend = new VscodeLmBackend();
+      const backend = createBackend(undefined, { hasEmbeddingsApi: false });
       try {
         await backend.initialize();
         expect.fail('Should have thrown');
@@ -316,8 +235,7 @@ describe('EmbeddingBackend Abstraction', function () {
     });
 
     it('should throw on initialize when model is not found', async () => {
-      setMock({ models: ['other-model'] });
-      const backend = new VscodeLmBackend('nonexistent-model');
+      const backend = createBackend('nonexistent-model', { models: ['other-model'] });
       try {
         await backend.initialize();
         expect.fail('Should have thrown');
